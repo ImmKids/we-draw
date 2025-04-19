@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Collaborative Canvas</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #222;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+        
+        h1 {
+            margin: 10px 0;
+        }
+        
+        #canvas-container {
+            position: relative;
+            margin: 10px;
+            border: 1px solid #444;
+        }
+        
+        canvas {
+            background-color: #333;
+            cursor: crosshair;
+        }
+        
+        #toolbar {
+            display: flex;
+            margin: 10px;
+            gap: 10px;
+        }
+        
+        .color-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border: 2px solid white;
+            cursor: pointer;
+        }
+        
+        .color-btn.active {
+            border-color: yellow;
+            transform: scale(1.1);
+        }
+        
+        #clear-btn {
+            padding: 10px 20px;
+            background-color: #666;
+            border: none;
+            color: white;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        
+        #clear-btn:hover {
+            background-color: #888;
+        }
+    </style>
+</head>
+<body>
+    <h1>Collaborative Canvas</h1>
+    
+    <div id="toolbar">
+        <div id="red" class="color-btn active" style="background-color: #FF0000"></div>
+        <div id="green" class="color-btn" style="background-color: #00CC00"></div>
+        <div id="blue" class="color-btn" style="background-color: #0066FF"></div>
+        <div id="yellow" class="color-btn" style="background-color: #FFCC00"></div>
+        <div id="purple" class="color-btn" style="background-color: #9900FF"></div>
+        <button id="clear-btn">Clear Canvas</button>
+    </div>
+    
+    <div id="canvas-container">
+        <canvas id="drawing-canvas" width="640" height="480"></canvas>
+    </div>
+    
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        // Connect to Socket.IO server
+        const socket = io();
+        const roomName = 'canvas-room';
+        
+        // Canvas setup
+        const canvas = document.getElementById('drawing-canvas');
+        const ctx = canvas.getContext('2d');
+        const colorBtns = document.querySelectorAll('.color-btn');
+        const clearBtn = document.getElementById('clear-btn');
+        
+        // Drawing state
+        let currentColor = '#FF0000';
+        const brushSize = 5;
+        let isDrawing = false;
+        let lastPoint = null;
+        
+        // Join drawing room
+        socket.on('connect', () => {
+            console.log('Connected to server with ID:', socket.id);
+            socket.emit('joinRoom', roomName);
+        });
+        
+        // Color selection
+        colorBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                // Remove active class from all buttons
+                colorBtns.forEach(b => b.classList.remove('active'));
+                
+                // Add active class to clicked button
+                btn.classList.add('active');
+                
+                // Set current color
+                currentColor = getComputedStyle(btn).backgroundColor;
+            });
+        });
+        
+        // Clear button
+        clearBtn.addEventListener('click', () => {
+            socket.emit('drawAction', { type: 'clear' });
+        });
+        
+        // Mouse events for drawing
+        canvas.addEventListener('mousedown', (e) => {
+            isDrawing = true;
+            const rect = canvas.getBoundingClientRect();
+            lastPoint = {
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top
+            };
+        });
+        
+        canvas.addEventListener('mousemove', (e) => {
+            if (!isDrawing || !lastPoint) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const currentPoint = {
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top
+            };
+            
+            // Draw line locally for immediate feedback
+            drawLine(lastPoint.x, lastPoint.y, currentPoint.x, currentPoint.y, currentColor);
+            
+            // Send drawing data to server
+            socket.emit('drawAction', {
+                type: 'draw',
+                color: currentColor,
+                brushSize: brushSize,
+                x1: lastPoint.x,
+                y1: lastPoint.y,
+                x2: currentPoint.x,
+                y2: currentPoint.y
+            });
+            
+            lastPoint = currentPoint;
+        });
+        
+        function endDrawing() {
+            isDrawing = false;
+            lastPoint = null;
+        }
+        
+        canvas.addEventListener('mouseup', endDrawing);
+        canvas.addEventListener('mouseleave', endDrawing);
+        
+        // Touch events for mobile devices
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            const touch = e.touches[0];
+            const mouseEvent = new MouseEvent('mousedown', {
+                clientX: touch.clientX,
+                clientY: touch.clientY
+            });
+            canvas.dispatchEvent(mouseEvent);
+        });
+        
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            const touch = e.touches[0];
+            const mouseEvent = new MouseEvent('mousemove', {
+                clientX: touch.clientX,
+                clientY: touch.clientY
+            });
+            canvas.dispatchEvent(mouseEvent);
+        });
+        
+        canvas.addEventListener('touchend', (e) => {
+            const mouseEvent = new MouseEvent('mouseup');
+            canvas.dispatchEvent(mouseEvent);
+        });
+        
+        // Local drawing function
+        function drawLine(x1, y1, x2, y2, color) {
+            ctx.strokeStyle = color;
+            ctx.lineWidth = brushSize;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.stroke();
+        }
+        
+        // Handle incoming drawing actions from other clients
+        socket.on('drawAction', (data) => {
+            if (data.type === 'draw') {
+                drawLine(data.x1, data.y1, data.x2, data.y2, data.color);
+            } else if (data.type === 'clear') {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+            }
+        });
+        
+        // Handle receiving canvas state from server
+        socket.on('canvasState', (imageData) => {
+            if (!imageData) return;
+            
+            const img = new Image();
+            img.onload = function() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(img, 0, 0);
+            };
+            img.src = imageData;
+        });
+    </script>
+</body>
+</html> 
